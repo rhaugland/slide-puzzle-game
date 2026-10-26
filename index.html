@@ -6,14 +6,14 @@
 <title>Slide</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-html,body{width:100%;height:100%;overflow:hidden;background:#f5f0e8;font-family:'SF Pro Display',system-ui,sans-serif;touch-action:none;user-select:none;-webkit-user-select:none}
+html,body{width:100%;height:100%;overflow:hidden;background:#1a1a2e;font-family:'SF Pro Display',system-ui,sans-serif;touch-action:none;user-select:none;-webkit-user-select:none}
 canvas{position:fixed;top:0;left:0}
-#overlay{display:none;position:fixed;inset:0;background:rgba(245,240,232,0.92);z-index:200;flex-direction:column;align-items:center;justify-content:center;gap:20px}
+#overlay{display:none;position:fixed;inset:0;background:rgba(10,10,30,0.92);z-index:200;flex-direction:column;align-items:center;justify-content:center;gap:20px}
 #overlay.show{display:flex}
-#overlay h2{font-size:32px;font-weight:900;color:#3d3832;letter-spacing:2px}
-#overlay .score{font-size:60px;font-weight:900;color:#c47a5a}
-#overlay .sub{font-size:16px;color:#9e9589}
-#overlay button{padding:16px 48px;font-size:17px;font-weight:700;border:none;border-radius:30px;cursor:pointer;color:#fff;background:#c47a5a;box-shadow:0 4px 12px rgba(196,122,90,0.3)}
+#overlay h2{font-size:36px;font-weight:900;color:#fff;letter-spacing:3px;text-shadow:0 0 20px rgba(255,107,107,0.5)}
+#overlay .score{font-size:64px;font-weight:900;background:linear-gradient(135deg,#ff6b6b,#feca57,#48dbfb);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+#overlay .sub{font-size:16px;color:rgba(255,255,255,0.5)}
+#overlay button{padding:18px 52px;font-size:18px;font-weight:800;border:none;border-radius:30px;cursor:pointer;color:#1a1a2e;background:linear-gradient(135deg,#feca57,#ff6b6b);box-shadow:0 6px 20px rgba(255,107,107,0.4);letter-spacing:1px}
 </style>
 </head>
 <body>
@@ -27,30 +27,32 @@ canvas{position:fixed;top:0;left:0}
 <script>
 const GRID=5,NUM_COLORS=4,GAME_TIME=180,CLEAR_THRESHOLD=3;
 
-// Matte, warm palette
+// Vibrant, fun palette
 const COLORS=[
-  {fill:'#d4796a',light:'#e0978c',dark:'#b8604f'},  // terracotta
-  {fill:'#6b9dad',light:'#8fbbc7',dark:'#4f7f8e'},  // dusty teal
-  {fill:'#d4b065',light:'#e2c98b',dark:'#b8944a'},  // muted gold
-  {fill:'#8ba68e',light:'#a8c0ab',dark:'#6d8a70'},  // sage
+  {fill:'#ff6b6b',light:'#ff9999',dark:'#e04040',glow:'rgba(255,107,107,0.6)',name:'red'},
+  {fill:'#48dbfb',light:'#7be7ff',dark:'#1cb5e0',glow:'rgba(72,219,251,0.6)',name:'blue'},
+  {fill:'#feca57',light:'#ffdd80',dark:'#e0a800',glow:'rgba(254,202,87,0.6)',name:'yellow'},
+  {fill:'#55efc4',light:'#81f5d8',dark:'#2bc4a0',glow:'rgba(85,239,196,0.6)',name:'green'},
 ];
 
-const BG='#f5f0e8';
-const BOARD_BG='#ece5d8';
-const TEXT_DARK='#3d3832';
-const TEXT_MID='#7a7168';
-const TEXT_LIGHT='#b5ada3';
-
-// Power-up types: null, 'clock', 'bomb', 'paint'
-// board[r][c] = {color: 0-3, special: null|'clock'|'bomb'|'paint'} or null (empty)
+const BG_TOP='#1a1a2e';
+const BG_BOT='#16213e';
+const BOARD_BG='#0f3460';
+const TEXT_WHITE='#ffffff';
+const TEXT_DIM='rgba(255,255,255,0.5)';
+const ACCENT='#feca57';
 
 let board,score,bestScore,timeLeft,timerInterval,isAnimating,combo;
-let totalCleared; // track clears to spawn power-ups
-let particles=[],floats=[],shakeAmt=0,pulsePhase=0;
+let totalCleared;
+let particles=[],floats=[],sparks=[],rings=[],shakeAmt=0,flashAmt=0,pulsePhase=0;
 let dragStart=null,dragCurrent=null;
-let tooltip=null; // {x,y,text,t}
-let W,H,cs,bpx,bx,by;
+let W,H,cs,bpx,bx,by,invY;
 const canvas=document.getElementById('game'),ctx=canvas.getContext('2d');
+
+// ── Inventory system ──
+let inventory={bomb:0,paint:[]};  // paint stores {color} items
+let selectedPower=null; // null | {type:'bomb'} | {type:'paint',color:0-3}
+let hoverCell=null; // {r,c} when power-up is selected and hovering board
 
 function layout(){
   const dpr=devicePixelRatio||1;
@@ -59,16 +61,17 @@ function layout(){
   canvas.style.width=W+'px';canvas.style.height=H+'px';
   ctx.setTransform(dpr,0,0,dpr,0,0);
   const hdr=80,pad=16;
-  const avail=Math.min(W-pad*2,H-hdr-pad*2,400);
+  const invSpace=80; // space for inventory below board
+  const avail=Math.min(W-pad*2,H-hdr-invSpace-pad*2,400);
   cs=Math.floor(avail/GRID);
   bpx=cs*GRID;
   bx=Math.floor((W-bpx)/2);
   by=hdr;
+  invY=by+bpx+20;
 }
 
 function makeCell(color,special){return{color,special:special||null};}
 function randCell(){return makeCell(Math.floor(Math.random()*NUM_COLORS));}
-function cellColor(cell){return cell?cell.color:-1;}
 
 function initBoard(){
   board=[];
@@ -99,15 +102,12 @@ function findClears(){
 }
 
 function slideRow(row,dir){
-  // dir 1=right, -1=left. Tile pushed off the edge disappears, new one enters opposite side.
   if(dir===1){
-    // Slide right: rightmost tile falls off, new tile enters on the left
     const fallen=board[row][GRID-1];
     if(fallen) spawnPop(row,GRID-1,fallen.color);
     for(let c=GRID-1;c>0;c--) board[row][c]=board[row][c-1];
     board[row][0]=spawnNewCell();
   } else {
-    // Slide left: leftmost tile falls off, new tile enters on the right
     const fallen=board[row][0];
     if(fallen) spawnPop(row,0,fallen.color);
     for(let c=0;c<GRID-1;c++) board[row][c]=board[row][c+1];
@@ -116,15 +116,12 @@ function slideRow(row,dir){
 }
 
 function slideCol(col,dir){
-  // dir 1=down, -1=up. Tile pushed off the edge disappears, new one enters opposite side.
   if(dir===1){
-    // Slide down: bottom tile falls off, new tile enters on top
     const fallen=board[GRID-1][col];
     if(fallen) spawnPop(GRID-1,col,fallen.color);
     for(let r=GRID-1;r>0;r--) board[r][col]=board[r-1][col];
     board[0][col]=spawnNewCell();
   } else {
-    // Slide up: top tile falls off, new tile enters on bottom
     const fallen=board[0][col];
     if(fallen) spawnPop(0,col,fallen.color);
     for(let r=0;r<GRID-1;r++) board[r][col]=board[r+1][col];
@@ -133,11 +130,10 @@ function slideCol(col,dir){
 }
 
 function executeSlide(axis,idx,dir){
-  if(isAnimating) return;
+  if(isAnimating||selectedPower) return;
   if(axis==='row') slideRow(idx,dir);
   else if(axis==='col') slideCol(idx,dir);
   else if(axis==='diag'){
-    // idx = {row, col}, dir = {dx, dy} where dx/dy are -1 or 1
     slideRow(idx.row,dir.dx);
     slideCol(idx.col,dir.dy);
   }
@@ -145,72 +141,98 @@ function executeSlide(axis,idx,dir){
   processClearsChain();
 }
 
-// ── Power-up Effects ──
-function triggerSpecial(r,c,cell){
+// ── Power-up Collection ──
+function collectSpecial(r,c,cell){
   const cx=bx+c*cs+cs/2,cy=by+r*cs+cs/2;
 
   if(cell.special==='clock'){
+    // Auto-apply: add time
     timeLeft=Math.min(timeLeft+5,999);
-    floats.push({x:cx,y:cy-10,text:'+5s',t:1.5,big:true,color:'#6b9dad'});
-    // Extra particles in teal
-    for(let i=0;i<12;i++){
-      const a=Math.random()*Math.PI*2,spd=3+Math.random()*4;
-      particles.push({x:cx,y:cy,vx:Math.cos(a)*spd,vy:Math.sin(a)*spd,life:1.2,color:'#6b9dad',size:3+Math.random()*3});
-    }
+    floats.push({x:cx,y:cy-10,text:'+5s',t:1.5,big:true,color:'#48dbfb'});
+    spawnStarBurst(cx,cy,'#48dbfb',15);
+    return;
   }
 
   if(cell.special==='bomb'){
-    // Clear entire row and column
-    let extra=0;
-    for(let i=0;i<GRID;i++){
-      if(board[r][i]&&!(r===r&&i===c)){
-        spawnPop(r,i,board[r][i].color);
-        board[r][i]=null;
-        extra++;
-      }
-      if(board[i][c]&&!(i===r&&c===c)){
-        spawnPop(i,c,board[i][c].color);
-        board[i][c]=null;
-        extra++;
-      }
-    }
-    score+=extra*20;
-    shakeAmt=Math.max(shakeAmt,10);
-    floats.push({x:cx,y:cy-10,text:`BOOM! +${extra*20}`,t:1.5,big:true,color:'#d4796a'});
-    // Big burst
-    for(let i=0;i<20;i++){
-      const a=Math.random()*Math.PI*2,spd=4+Math.random()*6;
-      particles.push({x:cx,y:cy,vx:Math.cos(a)*spd,vy:Math.sin(a)*spd,life:1.3,color:'#d4796a',size:3+Math.random()*5});
-    }
+    inventory.bomb++;
+    floats.push({x:cx,y:cy-10,text:'BOMB!',t:1.0,big:false,color:'#ff6b6b'});
+    spawnStarBurst(cx,cy,'#ff6b6b',8);
   }
 
   if(cell.special==='paint'){
-    // Recolor all adjacent tiles to this tile's color
-    let painted=0;
-    for(const [dr,dc] of [[0,1],[0,-1],[1,0],[-1,0],[1,1],[1,-1],[-1,1],[-1,-1]]){
-      const nr=r+dr,nc=c+dc;
-      if(nr<0||nr>=GRID||nc<0||nc>=GRID||!board[nr][nc]) continue;
-      board[nr][nc].color=cell.color;
-      painted++;
-      // Paint splash particles
-      const nx=bx+nc*cs+cs/2,ny=by+nr*cs+cs/2;
-      for(let i=0;i<4;i++){
-        const a=Math.random()*Math.PI*2,spd=1+Math.random()*2;
-        particles.push({x:nx,y:ny,vx:Math.cos(a)*spd,vy:Math.sin(a)*spd,life:0.8,color:COLORS[cell.color].fill,size:3+Math.random()*3});
-      }
-    }
-    floats.push({x:cx,y:cy-10,text:'PAINT!',t:1.2,big:true,color:COLORS[cell.color].dark});
+    inventory.paint.push({color:cell.color});
+    floats.push({x:cx,y:cy-10,text:'PAINT!',t:1.0,big:false,color:COLORS[cell.color].fill});
+    spawnStarBurst(cx,cy,COLORS[cell.color].fill,8);
   }
+}
+
+// ── Use Power-ups ──
+function useBomb(r,c){
+  const cx=bx+c*cs+cs/2,cy=by+r*cs+cs/2;
+  let extra=0;
+  for(let i=0;i<GRID;i++){
+    if(board[r][i]){
+      spawnPop(r,i,board[r][i].color);
+      board[r][i]=null;
+      extra++;
+    }
+    if(board[i][c]&&i!==r){
+      spawnPop(i,c,board[i][c].color);
+      board[i][c]=null;
+      extra++;
+    }
+  }
+  score+=extra*20;
+  shakeAmt=Math.max(shakeAmt,16);
+  flashAmt=0.3;
+  floats.push({x:cx,y:cy-10,text:`BOOM! +${extra*20}`,t:1.8,big:true,color:'#ff6b6b'});
+  // Explosion ring
+  rings.push({x:cx,y:cy,r:0,maxR:bpx*0.6,life:1,color:'#ff6b6b'});
+  spawnStarBurst(cx,cy,'#ff6b6b',30);
+  spawnStarBurst(cx,cy,'#feca57',20);
+  // Fill and chain
+  isAnimating=true;
+  setTimeout(()=>{
+    for(let rr=0;rr<GRID;rr++)for(let cc=0;cc<GRID;cc++){
+      if(!board[rr][cc]) board[rr][cc]=spawnNewCell();
+    }
+    setTimeout(()=>{
+      if(findClears().length>0){combo=1;processClearsChain();}
+      else isAnimating=false;
+    },150);
+  },300);
+}
+
+function usePaint(r,c,paintColor){
+  const cx=bx+c*cs+cs/2,cy=by+r*cs+cs/2;
+  let painted=0;
+  for(const [dr,dc] of [[0,1],[0,-1],[1,0],[-1,0],[1,1],[1,-1],[-1,1],[-1,-1]]){
+    const nr=r+dr,nc=c+dc;
+    if(nr<0||nr>=GRID||nc<0||nc>=GRID||!board[nr][nc]) continue;
+    board[nr][nc].color=paintColor;
+    painted++;
+    const nx=bx+nc*cs+cs/2,ny=by+nr*cs+cs/2;
+    spawnStarBurst(nx,ny,COLORS[paintColor].fill,5);
+  }
+  // Also paint the target cell
+  if(board[r][c]) board[r][c].color=paintColor;
+  floats.push({x:cx,y:cy-10,text:'SPLASH!',t:1.2,big:true,color:COLORS[paintColor].fill});
+  rings.push({x:cx,y:cy,r:0,maxR:cs*2,life:1,color:COLORS[paintColor].fill});
+  // Check for clears after paint
+  isAnimating=true;
+  setTimeout(()=>{
+    combo=0;
+    if(findClears().length>0){combo=1;processClearsChain();}
+    else isAnimating=false;
+  },200);
 }
 
 function processClearsChain(){
   const groups=findClears();
-  if(groups.length===0) return;
+  if(groups.length===0){isAnimating=false;return;}
   isAnimating=true;
   combo++;
   let total=0;
-
-  // Collect specials to trigger
   const specials=[];
 
   for(const grp of groups){
@@ -226,21 +248,30 @@ function processClearsChain(){
 
   totalCleared+=total;
 
-  // Trigger specials
-  for(const s of specials) triggerSpecial(s.r,s.c,s.cell);
+  // Collect specials into inventory (clock auto-applies)
+  for(const s of specials) collectSpecial(s.r,s.c,s.cell);
 
   const pts=total*10*combo;
   score+=pts;
-  if(combo>=2||specials.length>0){
-    const txt=combo>=2?`${combo}x COMBO! +${pts}`:`+${pts}`;
-    floats.push({x:W/2,y:by+bpx/2,text:txt,t:1.2,big:combo>=2,color:combo>=2?TEXT_DARK:TEXT_MID});
+
+  if(combo>=2){
+    floats.push({x:W/2,y:by+bpx/2,text:`${combo}x COMBO! +${pts}`,t:1.5,big:true,color:ACCENT});
+    shakeAmt=Math.min(12,combo*4);
+    if(combo>=3) flashAmt=0.15;
+    // Combo sparkles
+    for(let i=0;i<combo*5;i++){
+      const sx=bx+Math.random()*bpx,sy=by+Math.random()*bpx;
+      sparks.push({x:sx,y:sy,vx:(Math.random()-0.5)*3,vy:-2-Math.random()*3,life:1,color:ACCENT,size:2+Math.random()*2});
+    }
   } else {
-    floats.push({x:W/2,y:by+bpx/2,text:`+${pts}`,t:0.8,big:false,color:TEXT_MID});
+    floats.push({x:W/2,y:by+bpx/2,text:`+${pts}`,t:0.8,big:false,color:'#fff'});
   }
-  if(combo>=2) shakeAmt=Math.min(10,combo*3);
+
+  if(total>=5){
+    rings.push({x:W/2,y:by+bpx/2,r:0,maxR:bpx*0.4,life:1,color:'rgba(255,255,255,0.3)'});
+  }
 
   setTimeout(()=>{
-    // Fill empties — maybe spawn power-ups
     for(let r=0;r<GRID;r++)for(let c=0;c<GRID;c++){
       if(!board[r][c]) board[r][c]=spawnNewCell();
     }
@@ -253,8 +284,6 @@ function processClearsChain(){
 
 function spawnNewCell(){
   const cell=randCell();
-  // Spawn power-ups based on total clears
-  // ~12% chance of clock after 8+ clears, ~8% bomb after 12+, ~10% paint after 6+
   const roll=Math.random();
   if(totalCleared>=8 && roll<0.10) cell.special='clock';
   else if(totalCleared>=12 && roll<0.16) cell.special='bomb';
@@ -266,54 +295,139 @@ function spawnPop(r,c,ci){
   if(ci<0) return;
   const cx=bx+c*cs+cs/2,cy=by+r*cs+cs/2;
   const col=COLORS[ci];
-  for(let i=0;i<8;i++){
+  // Lots of particles for juicy feel
+  for(let i=0;i<14;i++){
+    const a=Math.random()*Math.PI*2,spd=3+Math.random()*6;
+    particles.push({x:cx,y:cy,vx:Math.cos(a)*spd,vy:Math.sin(a)*spd-2,life:1,color:col.fill,size:2+Math.random()*5});
+  }
+  // Star sparks
+  for(let i=0;i<4;i++){
+    const a=Math.random()*Math.PI*2,spd=2+Math.random()*4;
+    sparks.push({x:cx,y:cy,vx:Math.cos(a)*spd,vy:Math.sin(a)*spd-1,life:1,color:col.light,size:3+Math.random()*2});
+  }
+}
+
+function spawnStarBurst(x,y,color,count){
+  for(let i=0;i<count;i++){
     const a=Math.random()*Math.PI*2,spd=2+Math.random()*5;
-    particles.push({x:cx,y:cy,vx:Math.cos(a)*spd,vy:Math.sin(a)*spd,life:1,color:col.fill,size:2+Math.random()*4});
+    sparks.push({x,y,vx:Math.cos(a)*spd,vy:Math.sin(a)*spd-1,life:1.2,color,size:3+Math.random()*3});
   }
 }
 
 // ── Input ──
 const SWIPE_THRESHOLD=20;
-canvas.addEventListener('mousedown',e=>{if(!isAnimating)dragStart={x:e.clientX,y:e.clientY};});
-canvas.addEventListener('mousemove',e=>{if(dragStart)dragCurrent={x:e.clientX,y:e.clientY};});
-canvas.addEventListener('mouseup',()=>{handleSwipe();dragStart=null;dragCurrent=null;});
-canvas.addEventListener('touchstart',e=>{e.preventDefault();if(!isAnimating){const t=e.touches[0];dragStart={x:t.clientX,y:t.clientY};}},{passive:false});
-canvas.addEventListener('touchmove',e=>{e.preventDefault();if(dragStart){const t=e.touches[0];dragCurrent={x:t.clientX,y:t.clientY};}},{passive:false});
-canvas.addEventListener('touchend',e=>{e.preventDefault();handleSwipe();dragStart=null;dragCurrent=null;},{passive:false});
+let inputMode='swipe'; // 'swipe' | 'power'
 
-const SPECIAL_LABELS={
-  clock:'+5 seconds',
-  bomb:'Clears row & column',
-  paint:'Recolors neighbors',
-};
+canvas.addEventListener('mousedown',e=>{
+  const mx=e.clientX,my=e.clientY;
+  // Check inventory tap
+  if(handleInventoryTap(mx,my)) return;
+  // Check board tap when power-up selected
+  if(selectedPower&&!isAnimating){
+    const col=Math.floor((mx-bx)/cs),row=Math.floor((my-by)/cs);
+    if(row>=0&&row<GRID&&col>=0&&col<GRID){
+      applySelectedPower(row,col);
+      return;
+    } else {
+      // Tapped outside board — deselect
+      selectedPower=null;
+      return;
+    }
+  }
+  if(!isAnimating) dragStart={x:mx,y:my};
+});
+canvas.addEventListener('mousemove',e=>{
+  if(dragStart) dragCurrent={x:e.clientX,y:e.clientY};
+  // Track hover for power-up preview
+  if(selectedPower&&!isAnimating){
+    const col=Math.floor((e.clientX-bx)/cs),row=Math.floor((e.clientY-by)/cs);
+    if(row>=0&&row<GRID&&col>=0&&col<GRID) hoverCell={r:row,c:col};
+    else hoverCell=null;
+  }
+});
+canvas.addEventListener('mouseup',()=>{if(!selectedPower){handleSwipe();}dragStart=null;dragCurrent=null;});
 
-function handleSwipe(){
-  if(!dragStart||isAnimating) return;
-  const dx=dragCurrent?(dragCurrent.x-dragStart.x):0;
-  const dy=dragCurrent?(dragCurrent.y-dragStart.y):0;
+canvas.addEventListener('touchstart',e=>{
+  e.preventDefault();
+  const t=e.touches[0],mx=t.clientX,my=t.clientY;
+  if(handleInventoryTap(mx,my)) return;
+  if(selectedPower&&!isAnimating){
+    const col=Math.floor((mx-bx)/cs),row=Math.floor((my-by)/cs);
+    if(row>=0&&row<GRID&&col>=0&&col<GRID){
+      applySelectedPower(row,col);
+      return;
+    } else {selectedPower=null;return;}
+  }
+  if(!isAnimating) dragStart={x:mx,y:my};
+},{passive:false});
+canvas.addEventListener('touchmove',e=>{
+  e.preventDefault();
+  if(dragStart){const t=e.touches[0];dragCurrent={x:t.clientX,y:t.clientY};}
+  if(selectedPower&&!isAnimating){
+    const t=e.touches[0];
+    const col=Math.floor((t.clientX-bx)/cs),row=Math.floor((t.clientY-by)/cs);
+    if(row>=0&&row<GRID&&col>=0&&col<GRID) hoverCell={r:row,c:col};
+    else hoverCell=null;
+  }
+},{passive:false});
+canvas.addEventListener('touchend',e=>{
+  e.preventDefault();
+  if(!selectedPower){handleSwipe();}
+  dragStart=null;dragCurrent=null;
+},{passive:false});
 
-  const sc=Math.floor((dragStart.x-bx)/cs),sr=Math.floor((dragStart.y-by)/cs);
+function handleInventoryTap(mx,my){
+  // Inventory slots below board
+  const slotSize=56,gap=16;
+  const totalW=slotSize*2+gap;
+  const startX=Math.floor((W-totalW)/2);
 
-  // Tap (no swipe) — show tooltip if power-up tile
-  if(Math.abs(dx)<SWIPE_THRESHOLD&&Math.abs(dy)<SWIPE_THRESHOLD){
-    if(sr>=0&&sr<GRID&&sc>=0&&sc<GRID){
-      const cell=board[sr][sc];
-      if(cell&&cell.special){
-        tooltip={
-          x:bx+sc*cs+cs/2,
-          y:by+sr*cs,
-          text:SPECIAL_LABELS[cell.special],
-          t:2.0
-        };
+  // Bomb slot
+  if(mx>=startX&&mx<=startX+slotSize&&my>=invY&&my<=invY+slotSize){
+    if(inventory.bomb>0){
+      if(selectedPower&&selectedPower.type==='bomb'){selectedPower=null;}
+      else{selectedPower={type:'bomb'};hoverCell=null;}
+    }
+    return true;
+  }
+  // Paint slot
+  if(mx>=startX+slotSize+gap&&mx<=startX+slotSize*2+gap&&my>=invY&&my<=invY+slotSize){
+    if(inventory.paint.length>0){
+      if(selectedPower&&selectedPower.type==='paint'){selectedPower=null;}
+      else{
+        const p=inventory.paint[0];
+        selectedPower={type:'paint',color:p.color};
+        hoverCell=null;
       }
     }
-    return;
+    return true;
   }
+  return false;
+}
 
+function applySelectedPower(row,col){
+  if(!selectedPower) return;
+  if(selectedPower.type==='bomb'){
+    inventory.bomb--;
+    useBomb(row,col);
+  } else if(selectedPower.type==='paint'){
+    inventory.paint.shift();
+    usePaint(row,col,selectedPower.color);
+  }
+  selectedPower=null;
+  hoverCell=null;
+}
+
+function handleSwipe(){
+  if(!dragStart||isAnimating||selectedPower) return;
+  const dx=dragCurrent?(dragCurrent.x-dragStart.x):0;
+  const dy=dragCurrent?(dragCurrent.y-dragStart.y):0;
+  const sc=Math.floor((dragStart.x-bx)/cs),sr=Math.floor((dragStart.y-by)/cs);
+
+  if(Math.abs(dx)<SWIPE_THRESHOLD&&Math.abs(dy)<SWIPE_THRESHOLD) return;
   if(sr<0||sr>=GRID||sc<0||sc>=GRID) return;
   const adx=Math.abs(dx),ady=Math.abs(dy);
   const ratio=Math.min(adx,ady)/Math.max(adx,ady);
-  // If both axes have significant movement (ratio > 0.4), it's a diagonal swipe
   if(ratio>0.4&&adx>SWIPE_THRESHOLD*0.7&&ady>SWIPE_THRESHOLD*0.7){
     executeSlide('diag',{row:sr,col:sc},{dx:dx>0?1:-1,dy:dy>0?1:-1});
   } else if(adx>ady) executeSlide('row',sr,dx>0?1:-1);
@@ -341,54 +455,126 @@ function gameOver(){
 
 // ── Draw ──
 function draw(){
-  ctx.clearRect(0,0,W,H);
-  ctx.fillStyle=BG;
+  // Background gradient
+  const bgGrad=ctx.createLinearGradient(0,0,0,H);
+  bgGrad.addColorStop(0,BG_TOP);
+  bgGrad.addColorStop(1,BG_BOT);
+  ctx.fillStyle=bgGrad;
   ctx.fillRect(0,0,W,H);
 
+  // Subtle animated bg dots
+  ctx.globalAlpha=0.03;
+  for(let i=0;i<30;i++){
+    const px=(i*137.5+pulsePhase*10)%W;
+    const py=(i*89.3+pulsePhase*5)%(H*0.7);
+    ctx.fillStyle='#fff';
+    ctx.beginPath();ctx.arc(px,py,2,0,Math.PI*2);ctx.fill();
+  }
+  ctx.globalAlpha=1;
+
   ctx.save();
-  if(shakeAmt>0.5){ctx.translate((Math.random()-0.5)*shakeAmt,(Math.random()-0.5)*shakeAmt);shakeAmt*=0.88;}else shakeAmt=0;
+
+  // Screen flash
+  if(flashAmt>0.01){
+    ctx.fillStyle=`rgba(255,255,255,${flashAmt})`;
+    ctx.fillRect(0,0,W,H);
+    flashAmt*=0.85;
+  }
+
+  if(shakeAmt>0.5){ctx.translate((Math.random()-0.5)*shakeAmt,(Math.random()-0.5)*shakeAmt);shakeAmt*=0.86;}else shakeAmt=0;
   pulsePhase+=0.04;
 
   // Header
-  ctx.fillStyle=TEXT_DARK;ctx.font='bold 24px system-ui';ctx.textBaseline='middle';
+  ctx.fillStyle='#fff';ctx.font='bold 26px system-ui';ctx.textBaseline='middle';
+  ctx.shadowColor='rgba(254,202,87,0.3)';ctx.shadowBlur=10;
   ctx.fillText('SLIDE',bx,30);
-  ctx.fillStyle='#c47a5a';ctx.font='bold 28px system-ui';ctx.textAlign='right';
+  ctx.shadowBlur=0;
+
+  // Score with glow
+  ctx.fillStyle=ACCENT;ctx.font='bold 30px system-ui';ctx.textAlign='right';
+  ctx.shadowColor='rgba(254,202,87,0.4)';ctx.shadowBlur=12;
   ctx.fillText(score.toString(),bx+bpx,30);
+  ctx.shadowBlur=0;
   ctx.textAlign='left';
 
-  // Timer: show time prominently next to title
+  // Timer
   const mins=Math.floor(timeLeft/60);
   const secs=timeLeft%60;
   const timeStr=`${mins}:${secs<10?'0':''}${secs}`;
-  ctx.fillStyle=timeLeft<=30?'#d4796a':TEXT_MID;
-  ctx.font='bold 18px system-ui';
-  ctx.fillText(timeStr,bx+bpx/2-20,30);
+  ctx.fillStyle=timeLeft<=30?'#ff6b6b':'rgba(255,255,255,0.7)';
+  ctx.font='bold 20px system-ui';
+  ctx.textAlign='center';
+  ctx.fillText(timeStr,W/2,30);
+  ctx.textAlign='left';
 
   // Timer bar
   const barY=52,barH=6;
-  ctx.fillStyle='#e2dbd0';
+  ctx.fillStyle='rgba(255,255,255,0.1)';
   rrect(bx,barY,bpx,barH,3);ctx.fill();
   const pct=Math.min(1,timeLeft/GAME_TIME);
-  ctx.fillStyle=pct>0.5?'#8ba68e':pct>0.2?'#d4b065':'#d4796a';
+  const barGrad=ctx.createLinearGradient(bx,0,bx+bpx*pct,0);
+  if(pct>0.5){barGrad.addColorStop(0,'#55efc4');barGrad.addColorStop(1,'#48dbfb');}
+  else if(pct>0.2){barGrad.addColorStop(0,'#feca57');barGrad.addColorStop(1,'#ff9f43');}
+  else{barGrad.addColorStop(0,'#ff6b6b');barGrad.addColorStop(1,'#ee5a24');}
+  ctx.fillStyle=barGrad;
   rrect(bx,barY,bpx*pct,barH,3);ctx.fill();
 
-  // Board bg
+  // Pulsing timer bar when low
+  if(timeLeft<=30){
+    ctx.globalAlpha=0.3+0.2*Math.sin(pulsePhase*4);
+    ctx.fillStyle='#ff6b6b';
+    rrect(bx,barY,bpx*pct,barH,3);ctx.fill();
+    ctx.globalAlpha=1;
+  }
+
+  // Board bg with glow
   ctx.fillStyle=BOARD_BG;
-  ctx.shadowColor='rgba(60,50,40,0.08)';ctx.shadowBlur=20;ctx.shadowOffsetY=4;
+  ctx.shadowColor='rgba(72,219,251,0.15)';ctx.shadowBlur=30;
   rrect(bx-8,by-8,bpx+16,bpx+16,16);ctx.fill();
-  ctx.shadowBlur=0;ctx.shadowOffsetY=0;
+  ctx.shadowBlur=0;
+
+  // Board border glow
+  ctx.strokeStyle='rgba(72,219,251,0.2)';ctx.lineWidth=2;
+  rrect(bx-8,by-8,bpx+16,bpx+16,16);ctx.stroke();
 
   // Grid cell backgrounds
   for(let r=0;r<GRID;r++){
     for(let c=0;c<GRID;c++){
-      ctx.fillStyle='rgba(0,0,0,0.03)';
-      rrect(bx+c*cs+2,by+r*cs+2,cs-4,cs-4,10);ctx.fill();
+      ctx.fillStyle='rgba(255,255,255,0.04)';
+      rrect(bx+c*cs+3,by+r*cs+3,cs-6,cs-6,10);ctx.fill();
+    }
+  }
+
+  // Power-up preview highlights
+  if(selectedPower&&hoverCell&&!isAnimating){
+    const {r:hr,c:hc}=hoverCell;
+    if(selectedPower.type==='bomb'){
+      // Highlight row and col
+      ctx.fillStyle='rgba(255,107,107,0.2)';
+      for(let i=0;i<GRID;i++){
+        rrect(bx+i*cs+3,by+hr*cs+3,cs-6,cs-6,10);ctx.fill();
+        if(i!==hr){rrect(bx+hc*cs+3,by+i*cs+3,cs-6,cs-6,10);ctx.fill();}
+      }
+      // Crosshair on target
+      ctx.strokeStyle='rgba(255,107,107,0.6)';ctx.lineWidth=2;
+      rrect(bx+hc*cs+1,by+hr*cs+1,cs-2,cs-2,10);ctx.stroke();
+    }
+    if(selectedPower.type==='paint'){
+      const pc=selectedPower.color;
+      const pcol=COLORS[pc];
+      // Highlight neighbors that would be painted
+      for(const [dr,dc] of [[0,0],[0,1],[0,-1],[1,0],[-1,0],[1,1],[1,-1],[-1,1],[-1,-1]]){
+        const nr=hr+dr,nc=hc+dc;
+        if(nr<0||nr>=GRID||nc<0||nc>=GRID) continue;
+        ctx.fillStyle=pcol.glow;
+        rrect(bx+nc*cs+3,by+nr*cs+3,cs-6,cs-6,10);ctx.fill();
+      }
     }
   }
 
   // Swipe preview offset
   let dragOffsets=null;
-  if(dragStart&&dragCurrent&&!isAnimating){
+  if(dragStart&&dragCurrent&&!isAnimating&&!selectedPower){
     const dx=dragCurrent.x-dragStart.x,dy=dragCurrent.y-dragStart.y;
     const sc=Math.floor((dragStart.x-bx)/cs),sr=Math.floor((dragStart.y-by)/cs);
     if(sr>=0&&sr<GRID&&sc>=0&&sc<GRID){
@@ -403,11 +589,9 @@ function draw(){
     }
   }
 
-  // Tiles — clip to board area so dragged tiles don't overflow
+  // Tiles — clip to board
   ctx.save();
-  ctx.beginPath();
-  ctx.rect(bx-8,by-8,bpx+16,bpx+16);
-  ctx.clip();
+  ctx.beginPath();ctx.rect(bx-8,by-8,bpx+16,bpx+16);ctx.clip();
 
   for(let r=0;r<GRID;r++){
     for(let c=0;c<GRID;c++){
@@ -425,55 +609,64 @@ function draw(){
       drawTile(tx,ty,cs,cell);
     }
   }
-
   ctx.restore();
 
-  // Particles
+  // Explosion rings
+  for(const ring of rings){
+    ctx.globalAlpha=ring.life*0.5;
+    ctx.strokeStyle=ring.color;
+    ctx.lineWidth=3*ring.life;
+    const curR=ring.maxR*(1-ring.life);
+    ctx.beginPath();ctx.arc(ring.x,ring.y,curR,0,Math.PI*2);ctx.stroke();
+  }
+  ctx.globalAlpha=1;
+
+  // Particles (circles)
   for(const p of particles){
-    ctx.globalAlpha=Math.min(1,p.life);ctx.fillStyle=p.color;
+    ctx.globalAlpha=Math.min(1,p.life);
+    ctx.fillStyle=p.color;
+    ctx.shadowColor=p.color;ctx.shadowBlur=6;
     ctx.beginPath();ctx.arc(p.x,p.y,p.size*p.life,0,Math.PI*2);ctx.fill();
+  }
+  ctx.shadowBlur=0;ctx.globalAlpha=1;
+
+  // Sparks (star-shaped)
+  for(const s of sparks){
+    ctx.globalAlpha=Math.min(1,s.life);
+    ctx.fillStyle=s.color;
+    drawStar(s.x,s.y,s.size*s.life);
   }
   ctx.globalAlpha=1;
 
   // Floats
   for(const f of floats){
-    ctx.globalAlpha=Math.min(1,f.t*2);ctx.fillStyle=f.color;
-    ctx.font=f.big?'bold 36px system-ui':'bold 16px system-ui';
-    ctx.textAlign='center';ctx.fillText(f.text,f.x,f.y-(1-f.t)*40);ctx.textAlign='left';
+    const alpha=Math.min(1,f.t*2);
+    ctx.globalAlpha=alpha;
+    ctx.fillStyle=f.color;
+    ctx.font=f.big?'bold 40px system-ui':'bold 18px system-ui';
+    ctx.textAlign='center';
+    if(f.big){
+      ctx.shadowColor=f.color;ctx.shadowBlur=15;
+    }
+    ctx.fillText(f.text,f.x,f.y-(1-f.t)*45);
+    ctx.shadowBlur=0;
+    ctx.textAlign='left';
   }
   ctx.globalAlpha=1;
 
-  // Tooltip
-  if(tooltip&&tooltip.t>0){
-    const tt=tooltip;
-    const alpha=Math.min(1,tt.t*2);
-    const ty=tt.y-12-(1-Math.min(1,tt.t))*10;
-
-    // Measure text
-    ctx.font='bold 13px system-ui';
-    const tw=ctx.measureText(tt.text).width;
-    const px=10,py=6;
-    const bw=tw+px*2,bh=18+py*2;
-    let ttx=Math.max(bx,Math.min(tt.x-bw/2,bx+bpx-bw));
-
-    // Pill background
-    ctx.globalAlpha=alpha*0.9;
-    ctx.fillStyle=TEXT_DARK;
-    rrect(ttx,ty-bh/2,bw,bh,bh/2);ctx.fill();
-
-    // Text
-    ctx.globalAlpha=alpha;
-    ctx.fillStyle='#f5f0e8';
-    ctx.textAlign='center';ctx.textBaseline='middle';
-    ctx.fillText(tt.text,ttx+bw/2,ty);
-    ctx.textAlign='left';ctx.textBaseline='middle';
-    ctx.globalAlpha=1;
-  }
+  // ── Inventory Bar ──
+  drawInventory();
 
   // Hint
-  if(!isAnimating&&timeLeft>0){
-    ctx.fillStyle=TEXT_LIGHT;ctx.font='13px system-ui';ctx.textAlign='center';
-    ctx.fillText('Swipe any direction to match 3+',W/2,by+bpx+30);
+  if(!isAnimating&&timeLeft>0&&!selectedPower){
+    ctx.fillStyle=TEXT_DIM;ctx.font='13px system-ui';ctx.textAlign='center';
+    ctx.fillText('Swipe any direction to match 3+',W/2,invY+70);
+    ctx.textAlign='left';
+  }
+  if(selectedPower){
+    ctx.fillStyle=ACCENT;ctx.font='bold 14px system-ui';ctx.textAlign='center';
+    const label=selectedPower.type==='bomb'?'Tap a tile to detonate':'Tap a tile to paint';
+    ctx.fillText(label,W/2,invY+70);
     ctx.textAlign='left';
   }
 
@@ -484,47 +677,195 @@ function drawTile(x,y,size,cell){
   const col=COLORS[cell.color];
   const pad=4,r=12;
 
-  // Soft shadow
-  ctx.fillStyle='rgba(60,50,40,0.1)';
-  rrect(x+pad+1,y+pad+2,size-pad*2,size-pad*2,r);ctx.fill();
+  // Drop shadow
+  ctx.fillStyle='rgba(0,0,0,0.25)';
+  rrect(x+pad+1,y+pad+3,size-pad*2,size-pad*2,r);ctx.fill();
 
-  // Main tile
-  ctx.fillStyle=col.fill;
+  // Main tile with gradient
+  const tGrad=ctx.createLinearGradient(x,y,x,y+size);
+  tGrad.addColorStop(0,col.light);
+  tGrad.addColorStop(0.5,col.fill);
+  tGrad.addColorStop(1,col.dark);
+  ctx.fillStyle=tGrad;
   rrect(x+pad,y+pad,size-pad*2,size-pad*2,r);ctx.fill();
 
-  // Top highlight
-  ctx.fillStyle='rgba(255,255,255,0.15)';
-  rrect(x+pad,y+pad,size-pad*2,(size-pad*2)*0.35,r);ctx.fill();
+  // Glossy top highlight
+  ctx.fillStyle='rgba(255,255,255,0.25)';
+  const hh=(size-pad*2)*0.4;
+  ctx.beginPath();
+  ctx.moveTo(x+pad+r,y+pad);
+  ctx.lineTo(x+size-pad-r,y+pad);
+  ctx.quadraticCurveTo(x+size-pad,y+pad,x+size-pad,y+pad+r);
+  ctx.lineTo(x+size-pad,y+pad+hh*0.5);
+  ctx.quadraticCurveTo(x+size/2,y+pad+hh*1.2,x+pad,y+pad+hh*0.5);
+  ctx.lineTo(x+pad,y+pad+r);
+  ctx.quadraticCurveTo(x+pad,y+pad,x+pad+r,y+pad);
+  ctx.closePath();
+  ctx.fill();
 
-  // Inner border
-  ctx.strokeStyle='rgba(255,255,255,0.1)';
-  ctx.lineWidth=1;
-  rrect(x+pad+0.5,y+pad+0.5,size-pad*2-1,size-pad*2-1,r);ctx.stroke();
+  // Inner glow border
+  ctx.strokeStyle='rgba(255,255,255,0.15)';
+  ctx.lineWidth=1.5;
+  rrect(x+pad+1,y+pad+1,size-pad*2-2,size-pad*2-2,r-1);ctx.stroke();
 
-  // ── Power-up labels (descriptive text on tile) ──
+  // ── Power-up icons ──
   if(cell.special){
     const cx=x+size/2,cy=y+size/2;
-    const tileW=size-pad*2;
-    const fontSize=Math.max(9,Math.min(12,tileW*0.16));
+    const iconSize=size*0.32;
 
-    let line1,line2;
-    if(cell.special==='clock'){line1='+5';line2='seconds';}
-    else if(cell.special==='bomb'){line1='clear';line2='row+col';}
-    else{line1='recolor';line2='around';}
+    // White circle backdrop
+    ctx.fillStyle='rgba(255,255,255,0.35)';
+    ctx.beginPath();ctx.arc(cx,cy,iconSize+2,0,Math.PI*2);ctx.fill();
 
-    // Frosted backdrop
-    const bh=fontSize*2.6+6;
-    ctx.fillStyle='rgba(255,255,255,0.3)';
-    rrect(x+pad+4,cy-bh/2,tileW-8,bh,6);ctx.fill();
+    ctx.fillStyle='#fff';ctx.strokeStyle='#fff';ctx.lineWidth=2;
 
-    // Text lines
-    ctx.fillStyle='rgba(255,255,255,0.95)';
-    ctx.font=`bold ${fontSize}px system-ui`;
-    ctx.textAlign='center';ctx.textBaseline='middle';
-    ctx.fillText(line1,cx,cy-fontSize*0.55);
-    ctx.fillText(line2,cx,cy+fontSize*0.55);
-    ctx.textAlign='left';
+    if(cell.special==='clock'){
+      drawClockIcon(cx,cy,iconSize);
+    } else if(cell.special==='bomb'){
+      drawBombIcon(cx,cy,iconSize);
+    } else if(cell.special==='paint'){
+      drawPaintIcon(cx,cy,iconSize);
+    }
   }
+}
+
+// ── Icon Drawing ──
+function drawClockIcon(cx,cy,s){
+  // Clock face
+  ctx.beginPath();ctx.arc(cx,cy,s*0.8,0,Math.PI*2);ctx.stroke();
+  // Hour hand
+  ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(cx,cy-s*0.5);ctx.stroke();
+  // Minute hand
+  ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(cx+s*0.35,cy+s*0.1);ctx.stroke();
+  // Center dot
+  ctx.beginPath();ctx.arc(cx,cy,2,0,Math.PI*2);ctx.fill();
+  // +5 label
+  ctx.font=`bold ${Math.max(8,s*0.55)}px system-ui`;
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText('+5',cx,cy+s*1.1);
+  ctx.textAlign='left';
+}
+
+function drawBombIcon(cx,cy,s){
+  // Bomb body (circle)
+  ctx.fillStyle='#fff';
+  ctx.beginPath();ctx.arc(cx,cy+s*0.1,s*0.65,0,Math.PI*2);ctx.fill();
+  // Dark inner
+  ctx.fillStyle='rgba(0,0,0,0.3)';
+  ctx.beginPath();ctx.arc(cx,cy+s*0.1,s*0.5,0,Math.PI*2);ctx.fill();
+  // Fuse
+  ctx.strokeStyle='#fff';ctx.lineWidth=2;
+  ctx.beginPath();
+  ctx.moveTo(cx+s*0.3,cy-s*0.35);
+  ctx.quadraticCurveTo(cx+s*0.5,cy-s*0.7,cx+s*0.15,cy-s*0.75);
+  ctx.stroke();
+  // Spark
+  ctx.fillStyle=ACCENT;
+  drawStar(cx+s*0.15,cy-s*0.78,4);
+  ctx.fillStyle='#fff';
+}
+
+function drawPaintIcon(cx,cy,s){
+  // Paint drop
+  ctx.beginPath();
+  ctx.moveTo(cx,cy-s*0.8);
+  ctx.quadraticCurveTo(cx+s*0.7,cy+s*0.1,cx+s*0.4,cy+s*0.5);
+  ctx.quadraticCurveTo(cx,cy+s*0.9,cx-s*0.4,cy+s*0.5);
+  ctx.quadraticCurveTo(cx-s*0.7,cy+s*0.1,cx,cy-s*0.8);
+  ctx.closePath();
+  ctx.fill();
+  // Highlight
+  ctx.fillStyle='rgba(255,255,255,0.4)';
+  ctx.beginPath();ctx.arc(cx-s*0.15,cy,s*0.15,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#fff';
+}
+
+function drawStar(x,y,s){
+  ctx.beginPath();
+  for(let i=0;i<5;i++){
+    const a=Math.PI*2*i/5-Math.PI/2;
+    const a2=a+Math.PI/5;
+    ctx.lineTo(x+Math.cos(a)*s,y+Math.sin(a)*s);
+    ctx.lineTo(x+Math.cos(a2)*s*0.4,y+Math.sin(a2)*s*0.4);
+  }
+  ctx.closePath();ctx.fill();
+}
+
+function drawInventory(){
+  const slotSize=56,gap=16;
+  const totalW=slotSize*2+gap;
+  const startX=Math.floor((W-totalW)/2);
+
+  // Label
+  ctx.fillStyle=TEXT_DIM;ctx.font='bold 11px system-ui';ctx.textAlign='center';
+  ctx.fillText('POWER-UPS',W/2,invY-6);
+  ctx.textAlign='left';
+
+  // Bomb slot
+  const bSel=selectedPower&&selectedPower.type==='bomb';
+  drawInvSlot(startX,invY,slotSize,'bomb',inventory.bomb,bSel);
+
+  // Paint slot
+  const pSel=selectedPower&&selectedPower.type==='paint';
+  drawInvSlot(startX+slotSize+gap,invY,slotSize,'paint',inventory.paint.length,pSel);
+}
+
+function drawInvSlot(x,y,size,type,count,selected){
+  // Slot background
+  ctx.fillStyle=selected?'rgba(254,202,87,0.25)':'rgba(255,255,255,0.08)';
+  rrect(x,y,size,size,14);ctx.fill();
+
+  // Selected border
+  if(selected){
+    ctx.strokeStyle=ACCENT;ctx.lineWidth=2.5;
+    rrect(x,y,size,size,14);ctx.stroke();
+  } else {
+    ctx.strokeStyle='rgba(255,255,255,0.15)';ctx.lineWidth=1;
+    rrect(x,y,size,size,14);ctx.stroke();
+  }
+
+  const cx=x+size/2,cy=y+size/2;
+  const iconS=size*0.25;
+
+  if(count>0){
+    ctx.fillStyle='#fff';ctx.strokeStyle='#fff';ctx.lineWidth=1.5;
+    if(type==='bomb') drawBombIcon(cx,cy-4,iconS);
+    else{
+      // Show paint color
+      if(inventory.paint.length>0){
+        const pc=inventory.paint[0].color;
+        ctx.fillStyle=COLORS[pc].fill;
+        drawPaintIcon(cx,cy-4,iconS);
+        ctx.fillStyle='#fff';
+      } else {
+        drawPaintIcon(cx,cy-4,iconS);
+      }
+    }
+
+    // Count badge
+    if(count>0){
+      const bx2=x+size-12,by2=y+4;
+      ctx.fillStyle='#ff6b6b';
+      ctx.beginPath();ctx.arc(bx2,by2+8,10,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle='#fff';ctx.font='bold 11px system-ui';
+      ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillText(count.toString(),bx2,by2+8);
+      ctx.textAlign='left';
+    }
+  } else {
+    // Empty slot — dim icon
+    ctx.globalAlpha=0.2;
+    ctx.fillStyle='#fff';ctx.strokeStyle='#fff';ctx.lineWidth=1.5;
+    if(type==='bomb') drawBombIcon(cx,cy-4,iconS);
+    else drawPaintIcon(cx,cy-4,iconS);
+    ctx.globalAlpha=1;
+  }
+
+  // Label
+  ctx.fillStyle=count>0?'rgba(255,255,255,0.7)':'rgba(255,255,255,0.25)';
+  ctx.font='bold 9px system-ui';ctx.textAlign='center';
+  ctx.fillText(type.toUpperCase(),cx,y+size-6);
+  ctx.textAlign='left';
 }
 
 function rrect(x,y,w,h,r){
@@ -534,9 +875,26 @@ function rrect(x,y,w,h,r){
 }
 
 function update(){
-  for(let i=particles.length-1;i>=0;i--){const p=particles[i];p.x+=p.vx;p.y+=p.vy;p.vy+=0.1;p.life-=0.025;if(p.life<=0)particles.splice(i,1);}
-  for(let i=floats.length-1;i>=0;i--){floats[i].t-=0.015;if(floats[i].t<=0)floats.splice(i,1);}
-  if(tooltip){tooltip.t-=0.015;if(tooltip.t<=0)tooltip=null;}
+  // Particles
+  for(let i=particles.length-1;i>=0;i--){
+    const p=particles[i];p.x+=p.vx;p.y+=p.vy;p.vy+=0.12;p.vx*=0.98;p.life-=0.022;
+    if(p.life<=0) particles.splice(i,1);
+  }
+  // Sparks
+  for(let i=sparks.length-1;i>=0;i--){
+    const s=sparks[i];s.x+=s.vx;s.y+=s.vy;s.vy+=0.06;s.life-=0.02;
+    if(s.life<=0) sparks.splice(i,1);
+  }
+  // Rings
+  for(let i=rings.length-1;i>=0;i--){
+    rings[i].life-=0.03;
+    if(rings[i].life<=0) rings.splice(i,1);
+  }
+  // Floats
+  for(let i=floats.length-1;i>=0;i--){
+    floats[i].t-=0.015;
+    if(floats[i].t<=0) floats.splice(i,1);
+  }
   draw();
   requestAnimationFrame(update);
 }
@@ -544,7 +902,9 @@ function update(){
 function startGame(){
   score=0;isAnimating=false;combo=0;totalCleared=0;
   bestScore=parseInt(localStorage.getItem('slide_best')||'0');
-  particles=[];floats=[];shakeAmt=0;
+  particles=[];floats=[];sparks=[];rings=[];shakeAmt=0;flashAmt=0;
+  inventory={bomb:0,paint:[]};
+  selectedPower=null;hoverCell=null;
   initBoard();startTimer();
 }
 
