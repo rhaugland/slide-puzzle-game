@@ -79,9 +79,9 @@ function generateLevel(num){
 
   // Params scale with level — more tiles, more colors, more scrambles
   const nc=Math.min(3+Math.floor(num/8),6);
-  const numGroups=Math.min(3+Math.floor(num/2),8);
+  const numGroups=Math.min(2+Math.floor(num/2),8);
   const groupSize=3;
-  const baseScrambles=Math.min(3+Math.floor(num*1.2),25);
+  const baseScrambles=Math.min(1+Math.floor(num*0.6),20);
 
   // Place groups of same-colored tiles
   let placed=0;
@@ -136,16 +136,15 @@ function generateLevel(num){
     totalMoves++;
   }
 
-  // Fix accidental matches — each fix adds to the move count
+  // Fix accidental matches — these are extra and don't count toward par
   let safety=0;
   while(findClearsOn(b).length>0&&safety<50){
     const row=Math.floor(Math.random()*GRID);
     wrapRow(b,row,1);
-    totalMoves++;
     safety++;
   }
 
-  // Par IS the scramble count — the exact minimum to reverse the scramble
+  // Par = only the intentional scramble moves (the reversible solution)
   return{board:b,par:totalMoves,numColors:nc};
 }
 
