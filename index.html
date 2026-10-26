@@ -25,14 +25,18 @@ canvas{position:fixed;top:0;left:0}
   <button id="restart-btn">Play Again</button>
 </div>
 <script>
-const GRID=5,NUM_COLORS=4,GAME_TIME=180,CLEAR_THRESHOLD=3;
+const GRID=5,NUM_COLORS=4,GAME_TIME=90,CLEAR_THRESHOLD=3;
+// Escalating colors: start with 3, unlock more as score rises
+const COLOR_THRESHOLDS=[0,0,0,500,2000,5000]; // score needed to unlock each color index
 
-// Vibrant, fun palette
+// Vibrant, fun palette (6 colors — last 3 unlock as score rises)
 const COLORS=[
   {fill:'#ff6b6b',light:'#ff9999',dark:'#e04040',glow:'rgba(255,107,107,0.6)',name:'red'},
   {fill:'#48dbfb',light:'#7be7ff',dark:'#1cb5e0',glow:'rgba(72,219,251,0.6)',name:'blue'},
   {fill:'#feca57',light:'#ffdd80',dark:'#e0a800',glow:'rgba(254,202,87,0.6)',name:'yellow'},
   {fill:'#55efc4',light:'#81f5d8',dark:'#2bc4a0',glow:'rgba(85,239,196,0.6)',name:'green'},
+  {fill:'#a55eea',light:'#c89df5',dark:'#8134d4',glow:'rgba(165,94,234,0.6)',name:'purple'},
+  {fill:'#ff9f43',light:'#ffbe76',dark:'#e07c20',glow:'rgba(255,159,67,0.6)',name:'orange'},
 ];
 
 const BG_TOP='#1a1a2e';
@@ -43,7 +47,7 @@ const TEXT_DIM='rgba(255,255,255,0.5)';
 const ACCENT='#feca57';
 
 let board,score,bestScore,timeLeft,timerInterval,isAnimating,combo;
-let totalCleared;
+let totalCleared,lastColorCount;
 let particles=[],floats=[],sparks=[],rings=[],shakeAmt=0,flashAmt=0,pulsePhase=0;
 let dragStart=null,dragCurrent=null;
 let W,H,cs,bpx,bx,by,invY;
@@ -71,7 +75,14 @@ function layout(){
 }
 
 function makeCell(color,special){return{color,special:special||null};}
-function randCell(){return makeCell(Math.floor(Math.random()*NUM_COLORS));}
+function activeColorCount(){
+  let n=0;
+  for(let i=0;i<COLORS.length;i++){
+    if(score>=COLOR_THRESHOLDS[i]) n=i+1;
+  }
+  return Math.max(3,Math.min(COLORS.length,n));
+}
+function randCell(){return makeCell(Math.floor(Math.random()*activeColorCount()));}
 
 function initBoard(){
   board=[];
@@ -147,8 +158,8 @@ function collectSpecial(r,c,cell){
 
   if(cell.special==='clock'){
     // Auto-apply: add time
-    timeLeft=Math.min(timeLeft+5,999);
-    floats.push({x:cx,y:cy-10,text:'+5s',t:1.5,big:true,color:'#48dbfb'});
+    timeLeft=Math.min(timeLeft+2,999);
+    floats.push({x:cx,y:cy-10,text:'+2s',t:1.5,big:true,color:'#48dbfb'});
     spawnStarBurst(cx,cy,'#48dbfb',15);
     return;
   }
@@ -194,7 +205,7 @@ function useBomb(r,c){
   isAnimating=true;
   setTimeout(()=>{
     for(let rr=0;rr<GRID;rr++)for(let cc=0;cc<GRID;cc++){
-      if(!board[rr][cc]) board[rr][cc]=spawnNewCell();
+      if(!board[rr][cc]) board[rr][cc]=safeRandCell(rr,cc);
     }
     setTimeout(()=>{
       if(findClears().length>0){combo=1;processClearsChain();}
@@ -254,6 +265,16 @@ function processClearsChain(){
   const pts=total*10*combo;
   score+=pts;
 
+  // Check if new color unlocked
+  const curColors=activeColorCount();
+  if(curColors>lastColorCount){
+    lastColorCount=curColors;
+    const newCol=COLORS[curColors-1];
+    floats.push({x:W/2,y:by-10,text:`NEW COLOR: ${newCol.name.toUpperCase()}!`,t:2.5,big:true,color:newCol.fill});
+    shakeAmt=Math.max(shakeAmt,8);
+    spawnStarBurst(W/2,by+bpx/2,newCol.fill,20);
+  }
+
   if(combo>=2){
     floats.push({x:W/2,y:by+bpx/2,text:`${combo}x COMBO! +${pts}`,t:1.5,big:true,color:ACCENT});
     shakeAmt=Math.min(12,combo*4);
@@ -272,8 +293,17 @@ function processClearsChain(){
   }
 
   setTimeout(()=>{
+    // Fill empties with anti-cascade logic
     for(let r=0;r<GRID;r++)for(let c=0;c<GRID;c++){
-      if(!board[r][c]) board[r][c]=spawnNewCell();
+      if(!board[r][c]){
+        const cell=safeRandCell(r,c);
+        // Still allow rare power-up spawns on refill
+        const roll=Math.random();
+        if(totalCleared>=12 && roll<0.04) cell.special='clock';
+        else if(totalCleared>=18 && roll<0.08) cell.special='bomb';
+        else if(totalCleared>=10 && roll<0.10) cell.special='paint';
+        board[r][c]=cell;
+      }
     }
     setTimeout(()=>{
       if(findClears().length>0) processClearsChain();
@@ -282,12 +312,30 @@ function processClearsChain(){
   },250);
 }
 
+// Anti-cascade: when filling after clears, try to avoid creating new matches
+function safeRandCell(r,c){
+  const nc=activeColorCount();
+  // Try up to 10 times to find a color that won't create a group of 3+
+  for(let attempt=0;attempt<10;attempt++){
+    const color=Math.floor(Math.random()*nc);
+    // Check if placing this color would create a connected group >= CLEAR_THRESHOLD
+    // Quick check: count same-color orthogonal neighbors
+    let sameNeighbors=0;
+    for(const [dr,dc] of [[0,1],[0,-1],[1,0],[-1,0]]){
+      const nr=r+dr,ncc=c+dc;
+      if(nr>=0&&nr<GRID&&ncc>=0&&ncc<GRID&&board[nr][ncc]&&board[nr][ncc].color===color) sameNeighbors++;
+    }
+    if(sameNeighbors<2) return makeCell(color);
+  }
+  return randCell(); // fallback
+}
+
 function spawnNewCell(){
   const cell=randCell();
   const roll=Math.random();
-  if(totalCleared>=8 && roll<0.10) cell.special='clock';
-  else if(totalCleared>=12 && roll<0.16) cell.special='bomb';
-  else if(totalCleared>=6 && roll<0.22) cell.special='paint';
+  if(totalCleared>=12 && roll<0.04) cell.special='clock';
+  else if(totalCleared>=18 && roll<0.08) cell.special='bomb';
+  else if(totalCleared>=10 && roll<0.10) cell.special='paint';
   return cell;
 }
 
@@ -742,7 +790,7 @@ function drawClockIcon(cx,cy,s){
   // +5 label
   ctx.font=`bold ${Math.max(8,s*0.55)}px system-ui`;
   ctx.textAlign='center';ctx.textBaseline='middle';
-  ctx.fillText('+5',cx,cy+s*1.1);
+  ctx.fillText('+2',cx,cy+s*1.1);
   ctx.textAlign='left';
 }
 
@@ -900,7 +948,7 @@ function update(){
 }
 
 function startGame(){
-  score=0;isAnimating=false;combo=0;totalCleared=0;
+  score=0;isAnimating=false;combo=0;totalCleared=0;lastColorCount=3;
   bestScore=parseInt(localStorage.getItem('slide_best')||'0');
   particles=[];floats=[];sparks=[];rings=[];shakeAmt=0;flashAmt=0;
   inventory={bomb:0,paint:[]};
