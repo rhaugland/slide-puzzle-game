@@ -53,10 +53,10 @@ let dragStart=null,dragCurrent=null;
 let W,H,cs,bpx,bx,by,invY;
 const canvas=document.getElementById('game'),ctx=canvas.getContext('2d');
 
-// ── Inventory system ──
-let inventory={bomb:0,paint:[]};  // paint stores {color} items
-let selectedPower=null; // null | {type:'bomb'} | {type:'paint',color:0-3}
-let hoverCell=null; // {r,c} when power-up is selected and hovering board
+// ── Droplet inventory: one slot per color, true = available ──
+let drops; // Array(COLORS.length).fill(false)
+let selectedDrop=null; // null | color index (0-5)
+let hoverCell=null;
 
 function layout(){
   const dpr=devicePixelRatio||1;
@@ -141,7 +141,7 @@ function slideCol(col,dir){
 }
 
 function executeSlide(axis,idx,dir){
-  if(isAnimating||selectedPower) return;
+  if(isAnimating||selectedDrop!==null) return;
   if(axis==='row') slideRow(idx,dir);
   else if(axis==='col') slideCol(idx,dir);
   else if(axis==='diag'){
@@ -157,79 +157,29 @@ function collectSpecial(r,c,cell){
   const cx=bx+c*cs+cs/2,cy=by+r*cs+cs/2;
 
   if(cell.special==='clock'){
-    // Auto-apply: add time
     timeLeft=Math.min(timeLeft+2,999);
     floats.push({x:cx,y:cy-10,text:'+2s',t:1.5,big:true,color:'#48dbfb'});
     spawnStarBurst(cx,cy,'#48dbfb',15);
     return;
   }
 
-  if(cell.special==='bomb'){
-    inventory.bomb++;
-    floats.push({x:cx,y:cy-10,text:'BOMB!',t:1.0,big:false,color:'#ff6b6b'});
-    spawnStarBurst(cx,cy,'#ff6b6b',8);
-  }
-
   if(cell.special==='paint'){
-    inventory.paint.push({color:cell.color});
-    floats.push({x:cx,y:cy-10,text:'PAINT!',t:1.0,big:false,color:COLORS[cell.color].fill});
-    spawnStarBurst(cx,cy,COLORS[cell.color].fill,8);
+    // Add this color droplet to inventory
+    drops[cell.color]=true;
+    const col=COLORS[cell.color];
+    floats.push({x:cx,y:cy-10,text:'DROP!',t:1.0,big:false,color:col.fill});
+    spawnStarBurst(cx,cy,col.fill,10);
   }
 }
 
-// ── Use Power-ups ──
-function useBomb(r,c){
+// ── Use Droplet: recolor ONE tile ──
+function useDrop(r,c,dropColor){
   const cx=bx+c*cs+cs/2,cy=by+r*cs+cs/2;
-  let extra=0;
-  for(let i=0;i<GRID;i++){
-    if(board[r][i]){
-      spawnPop(r,i,board[r][i].color);
-      board[r][i]=null;
-      extra++;
-    }
-    if(board[i][c]&&i!==r){
-      spawnPop(i,c,board[i][c].color);
-      board[i][c]=null;
-      extra++;
-    }
-  }
-  score+=extra*20;
-  shakeAmt=Math.max(shakeAmt,16);
-  flashAmt=0.3;
-  floats.push({x:cx,y:cy-10,text:`BOOM! +${extra*20}`,t:1.8,big:true,color:'#ff6b6b'});
-  // Explosion ring
-  rings.push({x:cx,y:cy,r:0,maxR:bpx*0.6,life:1,color:'#ff6b6b'});
-  spawnStarBurst(cx,cy,'#ff6b6b',30);
-  spawnStarBurst(cx,cy,'#feca57',20);
-  // Fill and chain
-  isAnimating=true;
-  setTimeout(()=>{
-    for(let rr=0;rr<GRID;rr++)for(let cc=0;cc<GRID;cc++){
-      if(!board[rr][cc]) board[rr][cc]=safeRandCell(rr,cc);
-    }
-    setTimeout(()=>{
-      if(findClears().length>0){combo=1;processClearsChain();}
-      else isAnimating=false;
-    },150);
-  },300);
-}
-
-function usePaint(r,c,paintColor){
-  const cx=bx+c*cs+cs/2,cy=by+r*cs+cs/2;
-  let painted=0;
-  for(const [dr,dc] of [[0,1],[0,-1],[1,0],[-1,0],[1,1],[1,-1],[-1,1],[-1,-1]]){
-    const nr=r+dr,nc=c+dc;
-    if(nr<0||nr>=GRID||nc<0||nc>=GRID||!board[nr][nc]) continue;
-    board[nr][nc].color=paintColor;
-    painted++;
-    const nx=bx+nc*cs+cs/2,ny=by+nr*cs+cs/2;
-    spawnStarBurst(nx,ny,COLORS[paintColor].fill,5);
-  }
-  // Also paint the target cell
-  if(board[r][c]) board[r][c].color=paintColor;
-  floats.push({x:cx,y:cy-10,text:'SPLASH!',t:1.2,big:true,color:COLORS[paintColor].fill});
-  rings.push({x:cx,y:cy,r:0,maxR:cs*2,life:1,color:COLORS[paintColor].fill});
-  // Check for clears after paint
+  const col=COLORS[dropColor];
+  if(board[r][c]) board[r][c].color=dropColor;
+  spawnStarBurst(cx,cy,col.fill,12);
+  rings.push({x:cx,y:cy,r:0,maxR:cs*1.5,life:1,color:col.fill});
+  // Check for clears after recolor
   isAnimating=true;
   setTimeout(()=>{
     combo=0;
@@ -297,11 +247,9 @@ function processClearsChain(){
     for(let r=0;r<GRID;r++)for(let c=0;c<GRID;c++){
       if(!board[r][c]){
         const cell=safeRandCell(r,c);
-        // Still allow rare power-up spawns on refill
         const roll=Math.random();
         if(totalCleared>=12 && roll<0.04) cell.special='clock';
-        else if(totalCleared>=18 && roll<0.08) cell.special='bomb';
-        else if(totalCleared>=10 && roll<0.10) cell.special='paint';
+        else if(totalCleared>=8 && roll<0.12) cell.special='paint';
         board[r][c]=cell;
       }
     }
@@ -334,8 +282,7 @@ function spawnNewCell(){
   const cell=randCell();
   const roll=Math.random();
   if(totalCleared>=12 && roll<0.04) cell.special='clock';
-  else if(totalCleared>=18 && roll<0.08) cell.special='bomb';
-  else if(totalCleared>=10 && roll<0.10) cell.special='paint';
+  else if(totalCleared>=8 && roll<0.12) cell.special='paint';
   return cell;
 }
 
@@ -364,110 +311,68 @@ function spawnStarBurst(x,y,color,count){
 
 // ── Input ──
 const SWIPE_THRESHOLD=20;
-let inputMode='swipe'; // 'swipe' | 'power'
 
-canvas.addEventListener('mousedown',e=>{
-  const mx=e.clientX,my=e.clientY;
-  // Check inventory tap
-  if(handleInventoryTap(mx,my)) return;
-  // Check board tap when power-up selected
-  if(selectedPower&&!isAnimating){
+function handleInputDown(mx,my){
+  // Check droplet bar tap
+  if(handleDropletTap(mx,my)) return;
+  // Check board tap when drop selected
+  if(selectedDrop!==null&&!isAnimating){
     const col=Math.floor((mx-bx)/cs),row=Math.floor((my-by)/cs);
     if(row>=0&&row<GRID&&col>=0&&col<GRID){
-      applySelectedPower(row,col);
+      drops[selectedDrop]=false;
+      useDrop(row,col,selectedDrop);
+      selectedDrop=null;hoverCell=null;
       return;
-    } else {
-      // Tapped outside board — deselect
-      selectedPower=null;
-      return;
-    }
+    } else {selectedDrop=null;return;}
   }
   if(!isAnimating) dragStart={x:mx,y:my};
-});
-canvas.addEventListener('mousemove',e=>{
-  if(dragStart) dragCurrent={x:e.clientX,y:e.clientY};
-  // Track hover for power-up preview
-  if(selectedPower&&!isAnimating){
-    const col=Math.floor((e.clientX-bx)/cs),row=Math.floor((e.clientY-by)/cs);
+}
+
+function handleInputMove(mx,my){
+  if(dragStart) dragCurrent={x:mx,y:my};
+  if(selectedDrop!==null&&!isAnimating){
+    const col=Math.floor((mx-bx)/cs),row=Math.floor((my-by)/cs);
     if(row>=0&&row<GRID&&col>=0&&col<GRID) hoverCell={r:row,c:col};
     else hoverCell=null;
   }
-});
-canvas.addEventListener('mouseup',()=>{if(!selectedPower){handleSwipe();}dragStart=null;dragCurrent=null;});
+}
+
+canvas.addEventListener('mousedown',e=>handleInputDown(e.clientX,e.clientY));
+canvas.addEventListener('mousemove',e=>handleInputMove(e.clientX,e.clientY));
+canvas.addEventListener('mouseup',()=>{if(selectedDrop===null)handleSwipe();dragStart=null;dragCurrent=null;});
 
 canvas.addEventListener('touchstart',e=>{
-  e.preventDefault();
-  const t=e.touches[0],mx=t.clientX,my=t.clientY;
-  if(handleInventoryTap(mx,my)) return;
-  if(selectedPower&&!isAnimating){
-    const col=Math.floor((mx-bx)/cs),row=Math.floor((my-by)/cs);
-    if(row>=0&&row<GRID&&col>=0&&col<GRID){
-      applySelectedPower(row,col);
-      return;
-    } else {selectedPower=null;return;}
-  }
-  if(!isAnimating) dragStart={x:mx,y:my};
+  e.preventDefault();const t=e.touches[0];handleInputDown(t.clientX,t.clientY);
 },{passive:false});
 canvas.addEventListener('touchmove',e=>{
-  e.preventDefault();
-  if(dragStart){const t=e.touches[0];dragCurrent={x:t.clientX,y:t.clientY};}
-  if(selectedPower&&!isAnimating){
-    const t=e.touches[0];
-    const col=Math.floor((t.clientX-bx)/cs),row=Math.floor((t.clientY-by)/cs);
-    if(row>=0&&row<GRID&&col>=0&&col<GRID) hoverCell={r:row,c:col};
-    else hoverCell=null;
-  }
+  e.preventDefault();const t=e.touches[0];handleInputMove(t.clientX,t.clientY);
 },{passive:false});
 canvas.addEventListener('touchend',e=>{
-  e.preventDefault();
-  if(!selectedPower){handleSwipe();}
-  dragStart=null;dragCurrent=null;
+  e.preventDefault();if(selectedDrop===null)handleSwipe();dragStart=null;dragCurrent=null;
 },{passive:false});
 
-function handleInventoryTap(mx,my){
-  // Inventory slots below board
-  const slotSize=56,gap=16;
-  const totalW=slotSize*2+gap;
+function handleDropletTap(mx,my){
+  const nc=activeColorCount();
+  const dropSize=40,gap=8;
+  const totalW=nc*dropSize+(nc-1)*gap;
   const startX=Math.floor((W-totalW)/2);
+  const dropY=invY;
 
-  // Bomb slot
-  if(mx>=startX&&mx<=startX+slotSize&&my>=invY&&my<=invY+slotSize){
-    if(inventory.bomb>0){
-      if(selectedPower&&selectedPower.type==='bomb'){selectedPower=null;}
-      else{selectedPower={type:'bomb'};hoverCell=null;}
-    }
-    return true;
-  }
-  // Paint slot
-  if(mx>=startX+slotSize+gap&&mx<=startX+slotSize*2+gap&&my>=invY&&my<=invY+slotSize){
-    if(inventory.paint.length>0){
-      if(selectedPower&&selectedPower.type==='paint'){selectedPower=null;}
-      else{
-        const p=inventory.paint[0];
-        selectedPower={type:'paint',color:p.color};
+  for(let i=0;i<nc;i++){
+    const dx=startX+i*(dropSize+gap);
+    if(mx>=dx&&mx<=dx+dropSize&&my>=dropY&&my<=dropY+dropSize){
+      if(drops[i]){
+        selectedDrop=(selectedDrop===i)?null:i;
         hoverCell=null;
       }
+      return true;
     }
-    return true;
   }
   return false;
 }
 
-function applySelectedPower(row,col){
-  if(!selectedPower) return;
-  if(selectedPower.type==='bomb'){
-    inventory.bomb--;
-    useBomb(row,col);
-  } else if(selectedPower.type==='paint'){
-    inventory.paint.shift();
-    usePaint(row,col,selectedPower.color);
-  }
-  selectedPower=null;
-  hoverCell=null;
-}
-
 function handleSwipe(){
-  if(!dragStart||isAnimating||selectedPower) return;
+  if(!dragStart||isAnimating||selectedDrop!==null) return;
   const dx=dragCurrent?(dragCurrent.x-dragStart.x):0;
   const dy=dragCurrent?(dragCurrent.y-dragStart.y):0;
   const sc=Math.floor((dragStart.x-bx)/cs),sr=Math.floor((dragStart.y-by)/cs);
@@ -593,36 +498,19 @@ function draw(){
     }
   }
 
-  // Power-up preview highlights
-  if(selectedPower&&hoverCell&&!isAnimating){
+  // Droplet preview: highlight the target tile in the selected color
+  if(selectedDrop!==null&&hoverCell&&!isAnimating){
     const {r:hr,c:hc}=hoverCell;
-    if(selectedPower.type==='bomb'){
-      // Highlight row and col
-      ctx.fillStyle='rgba(255,107,107,0.2)';
-      for(let i=0;i<GRID;i++){
-        rrect(bx+i*cs+3,by+hr*cs+3,cs-6,cs-6,10);ctx.fill();
-        if(i!==hr){rrect(bx+hc*cs+3,by+i*cs+3,cs-6,cs-6,10);ctx.fill();}
-      }
-      // Crosshair on target
-      ctx.strokeStyle='rgba(255,107,107,0.6)';ctx.lineWidth=2;
-      rrect(bx+hc*cs+1,by+hr*cs+1,cs-2,cs-2,10);ctx.stroke();
-    }
-    if(selectedPower.type==='paint'){
-      const pc=selectedPower.color;
-      const pcol=COLORS[pc];
-      // Highlight neighbors that would be painted
-      for(const [dr,dc] of [[0,0],[0,1],[0,-1],[1,0],[-1,0],[1,1],[1,-1],[-1,1],[-1,-1]]){
-        const nr=hr+dr,nc=hc+dc;
-        if(nr<0||nr>=GRID||nc<0||nc>=GRID) continue;
-        ctx.fillStyle=pcol.glow;
-        rrect(bx+nc*cs+3,by+nr*cs+3,cs-6,cs-6,10);ctx.fill();
-      }
-    }
+    const dcol=COLORS[selectedDrop];
+    ctx.fillStyle=dcol.glow;
+    rrect(bx+hc*cs+3,by+hr*cs+3,cs-6,cs-6,10);ctx.fill();
+    ctx.strokeStyle=dcol.fill;ctx.lineWidth=2.5;
+    rrect(bx+hc*cs+1,by+hr*cs+1,cs-2,cs-2,10);ctx.stroke();
   }
 
   // Swipe preview offset
   let dragOffsets=null;
-  if(dragStart&&dragCurrent&&!isAnimating&&!selectedPower){
+  if(dragStart&&dragCurrent&&!isAnimating&&selectedDrop===null){
     const dx=dragCurrent.x-dragStart.x,dy=dragCurrent.y-dragStart.y;
     const sc=Math.floor((dragStart.x-bx)/cs),sr=Math.floor((dragStart.y-by)/cs);
     if(sr>=0&&sr<GRID&&sc>=0&&sc<GRID){
@@ -702,19 +590,18 @@ function draw(){
   }
   ctx.globalAlpha=1;
 
-  // ── Inventory Bar ──
-  drawInventory();
+  // ── Droplet Bar ──
+  drawDropletBar();
 
   // Hint
-  if(!isAnimating&&timeLeft>0&&!selectedPower){
+  if(!isAnimating&&timeLeft>0&&selectedDrop===null){
     ctx.fillStyle=TEXT_DIM;ctx.font='13px system-ui';ctx.textAlign='center';
-    ctx.fillText('Swipe any direction to match 3+',W/2,invY+70);
+    ctx.fillText('Swipe any direction to match 3+',W/2,invY+58);
     ctx.textAlign='left';
   }
-  if(selectedPower){
-    ctx.fillStyle=ACCENT;ctx.font='bold 14px system-ui';ctx.textAlign='center';
-    const label=selectedPower.type==='bomb'?'Tap a tile to detonate':'Tap a tile to paint';
-    ctx.fillText(label,W/2,invY+70);
+  if(selectedDrop!==null){
+    ctx.fillStyle=COLORS[selectedDrop].fill;ctx.font='bold 14px system-ui';ctx.textAlign='center';
+    ctx.fillText('Tap a tile to recolor it',W/2,invY+58);
     ctx.textAlign='left';
   }
 
@@ -769,8 +656,6 @@ function drawTile(x,y,size,cell){
 
     if(cell.special==='clock'){
       drawClockIcon(cx,cy,iconSize);
-    } else if(cell.special==='bomb'){
-      drawBombIcon(cx,cy,iconSize);
     } else if(cell.special==='paint'){
       drawPaintIcon(cx,cy,iconSize);
     }
@@ -792,25 +677,6 @@ function drawClockIcon(cx,cy,s){
   ctx.textAlign='center';ctx.textBaseline='middle';
   ctx.fillText('+2',cx,cy+s*1.1);
   ctx.textAlign='left';
-}
-
-function drawBombIcon(cx,cy,s){
-  // Bomb body (circle)
-  ctx.fillStyle='#fff';
-  ctx.beginPath();ctx.arc(cx,cy+s*0.1,s*0.65,0,Math.PI*2);ctx.fill();
-  // Dark inner
-  ctx.fillStyle='rgba(0,0,0,0.3)';
-  ctx.beginPath();ctx.arc(cx,cy+s*0.1,s*0.5,0,Math.PI*2);ctx.fill();
-  // Fuse
-  ctx.strokeStyle='#fff';ctx.lineWidth=2;
-  ctx.beginPath();
-  ctx.moveTo(cx+s*0.3,cy-s*0.35);
-  ctx.quadraticCurveTo(cx+s*0.5,cy-s*0.7,cx+s*0.15,cy-s*0.75);
-  ctx.stroke();
-  // Spark
-  ctx.fillStyle=ACCENT;
-  drawStar(cx+s*0.15,cy-s*0.78,4);
-  ctx.fillStyle='#fff';
 }
 
 function drawPaintIcon(cx,cy,s){
@@ -839,81 +705,70 @@ function drawStar(x,y,s){
   ctx.closePath();ctx.fill();
 }
 
-function drawInventory(){
-  const slotSize=56,gap=16;
-  const totalW=slotSize*2+gap;
+function drawDropletBar(){
+  const nc=activeColorCount();
+  const dropSize=40,gap=8;
+  const totalW=nc*dropSize+(nc-1)*gap;
   const startX=Math.floor((W-totalW)/2);
+  const dropY=invY;
 
   // Label
   ctx.fillStyle=TEXT_DIM;ctx.font='bold 11px system-ui';ctx.textAlign='center';
-  ctx.fillText('POWER-UPS',W/2,invY-6);
+  ctx.fillText('DROPS',W/2,dropY-8);
   ctx.textAlign='left';
 
-  // Bomb slot
-  const bSel=selectedPower&&selectedPower.type==='bomb';
-  drawInvSlot(startX,invY,slotSize,'bomb',inventory.bomb,bSel);
+  for(let i=0;i<nc;i++){
+    const dx=startX+i*(dropSize+gap);
+    const cx=dx+dropSize/2,cy=dropY+dropSize/2;
+    const avail=drops[i];
+    const sel=selectedDrop===i;
+    const col=COLORS[i];
+    const dropR=dropSize*0.38;
 
-  // Paint slot
-  const pSel=selectedPower&&selectedPower.type==='paint';
-  drawInvSlot(startX+slotSize+gap,invY,slotSize,'paint',inventory.paint.length,pSel);
+    // Slot bg
+    ctx.fillStyle=sel?'rgba(254,202,87,0.2)':'rgba(255,255,255,0.06)';
+    rrect(dx,dropY,dropSize,dropSize,12);ctx.fill();
+
+    // Border
+    if(sel){
+      ctx.strokeStyle=ACCENT;ctx.lineWidth=2.5;
+      // Pulsing glow
+      ctx.shadowColor=ACCENT;ctx.shadowBlur=8+4*Math.sin(pulsePhase*4);
+      rrect(dx,dropY,dropSize,dropSize,12);ctx.stroke();
+      ctx.shadowBlur=0;
+    } else {
+      ctx.strokeStyle='rgba(255,255,255,0.12)';ctx.lineWidth=1;
+      rrect(dx,dropY,dropSize,dropSize,12);ctx.stroke();
+    }
+
+    // Droplet shape
+    if(avail){
+      // Lit up: full color with glow
+      ctx.fillStyle=col.fill;
+      ctx.shadowColor=col.glow;ctx.shadowBlur=10;
+      drawDropShape(cx,cy,dropR);
+      ctx.shadowBlur=0;
+      // Highlight on drop
+      ctx.fillStyle='rgba(255,255,255,0.35)';
+      ctx.beginPath();ctx.arc(cx-dropR*0.2,cy-dropR*0.1,dropR*0.25,0,Math.PI*2);ctx.fill();
+    } else {
+      // Dim: outline only
+      ctx.globalAlpha=0.2;
+      ctx.fillStyle=col.fill;
+      drawDropShape(cx,cy,dropR);
+      ctx.globalAlpha=1;
+    }
+  }
 }
 
-function drawInvSlot(x,y,size,type,count,selected){
-  // Slot background
-  ctx.fillStyle=selected?'rgba(254,202,87,0.25)':'rgba(255,255,255,0.08)';
-  rrect(x,y,size,size,14);ctx.fill();
-
-  // Selected border
-  if(selected){
-    ctx.strokeStyle=ACCENT;ctx.lineWidth=2.5;
-    rrect(x,y,size,size,14);ctx.stroke();
-  } else {
-    ctx.strokeStyle='rgba(255,255,255,0.15)';ctx.lineWidth=1;
-    rrect(x,y,size,size,14);ctx.stroke();
-  }
-
-  const cx=x+size/2,cy=y+size/2;
-  const iconS=size*0.25;
-
-  if(count>0){
-    ctx.fillStyle='#fff';ctx.strokeStyle='#fff';ctx.lineWidth=1.5;
-    if(type==='bomb') drawBombIcon(cx,cy-4,iconS);
-    else{
-      // Show paint color
-      if(inventory.paint.length>0){
-        const pc=inventory.paint[0].color;
-        ctx.fillStyle=COLORS[pc].fill;
-        drawPaintIcon(cx,cy-4,iconS);
-        ctx.fillStyle='#fff';
-      } else {
-        drawPaintIcon(cx,cy-4,iconS);
-      }
-    }
-
-    // Count badge
-    if(count>0){
-      const bx2=x+size-12,by2=y+4;
-      ctx.fillStyle='#ff6b6b';
-      ctx.beginPath();ctx.arc(bx2,by2+8,10,0,Math.PI*2);ctx.fill();
-      ctx.fillStyle='#fff';ctx.font='bold 11px system-ui';
-      ctx.textAlign='center';ctx.textBaseline='middle';
-      ctx.fillText(count.toString(),bx2,by2+8);
-      ctx.textAlign='left';
-    }
-  } else {
-    // Empty slot — dim icon
-    ctx.globalAlpha=0.2;
-    ctx.fillStyle='#fff';ctx.strokeStyle='#fff';ctx.lineWidth=1.5;
-    if(type==='bomb') drawBombIcon(cx,cy-4,iconS);
-    else drawPaintIcon(cx,cy-4,iconS);
-    ctx.globalAlpha=1;
-  }
-
-  // Label
-  ctx.fillStyle=count>0?'rgba(255,255,255,0.7)':'rgba(255,255,255,0.25)';
-  ctx.font='bold 9px system-ui';ctx.textAlign='center';
-  ctx.fillText(type.toUpperCase(),cx,y+size-6);
-  ctx.textAlign='left';
+function drawDropShape(cx,cy,r){
+  ctx.beginPath();
+  ctx.moveTo(cx,cy-r*1.3);
+  ctx.quadraticCurveTo(cx+r*1.1,cy+r*0.1,cx+r*0.6,cy+r*0.7);
+  ctx.quadraticCurveTo(cx,cy+r*1.3,cx-r*0.6,cy+r*0.7);
+  ctx.quadraticCurveTo(cx-r*1.1,cy+r*0.1,cx,cy-r*1.3);
+  ctx.closePath();
+  ctx.fill();
 }
 
 function rrect(x,y,w,h,r){
@@ -951,8 +806,8 @@ function startGame(){
   score=0;isAnimating=false;combo=0;totalCleared=0;lastColorCount=3;
   bestScore=parseInt(localStorage.getItem('slide_best')||'0');
   particles=[];floats=[];sparks=[];rings=[];shakeAmt=0;flashAmt=0;
-  inventory={bomb:0,paint:[]};
-  selectedPower=null;hoverCell=null;
+  drops=Array(COLORS.length).fill(false);
+  selectedDrop=null;hoverCell=null;
   initBoard();startTimer();
 }
 
