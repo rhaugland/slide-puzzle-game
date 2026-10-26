@@ -508,43 +508,13 @@ function draw(){
     }
   }
 
-  // Drag preview
-  let dragOffsets=null;
-  if(dragStart&&dragCurrent&&!isAnimating&&selectedDrop===null&&gameState==='play'){
-    const dx=dragCurrent.x-dragStart.x,dy=dragCurrent.y-dragStart.y;
-    const sc=Math.floor((dragStart.x-bx)/cs),sr=Math.floor((dragStart.y-by)/cs);
-    if(sr>=0&&sr<GRID&&sc>=0&&sc<GRID){
-      if(Math.abs(dx)>10||Math.abs(dy)>10){
-        const adx=Math.abs(dx),ady=Math.abs(dy);
-        const ratio=Math.min(adx,ady)/Math.max(adx,ady);
-        if(ratio>0.4&&adx>10&&ady>10){
-          dragOffsets={axis:'diag',row:sr,col:sc,offsetX:Math.max(-cs,Math.min(cs,dx)),offsetY:Math.max(-cs,Math.min(cs,dy))};
-        } else if(adx>ady) dragOffsets={axis:'row',idx:sr,offset:Math.max(-cs,Math.min(cs,dx))};
-        else dragOffsets={axis:'col',idx:sc,offset:Math.max(-cs,Math.min(cs,dy))};
-      }
-    }
-  }
-
   // Tiles
-  ctx.save();
-  ctx.beginPath();ctx.rect(bx,by,bpx,bpx);ctx.clip();
-
   for(let r=0;r<GRID;r++){
     for(let c=0;c<GRID;c++){
       if(board[r][c]===null) continue;
-      let tx=bx+c*cs,ty=by+r*cs;
-      if(dragOffsets){
-        if(dragOffsets.axis==='row'&&r===dragOffsets.idx) tx+=dragOffsets.offset;
-        else if(dragOffsets.axis==='col'&&c===dragOffsets.idx) ty+=dragOffsets.offset;
-        else if(dragOffsets.axis==='diag'){
-          if(r===dragOffsets.row) tx+=dragOffsets.offsetX;
-          if(c===dragOffsets.col) ty+=dragOffsets.offsetY;
-        }
-      }
-      drawTile(tx,ty,cs,board[r][c]);
+      drawTile(bx+c*cs,by+r*cs,cs,board[r][c]);
     }
   }
-  ctx.restore();
 
   // Effects
   for(const ring of rings){
